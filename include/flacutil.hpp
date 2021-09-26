@@ -12,11 +12,19 @@ FLAC encoder
 #include <sstream>
 #include <utility>
 #include <tuple>
+#include <vector>
 
-#define FLAC_MAX_LPC 32
-#define FLAX_MAX_K 30
+// #define FLAC_MAX_LPC 32
+// #define FLAC_MIN_LPC 1 // Not sure if I'll need this
+// #define FLAC_MAX_K 30
+// #define FLAC_MAX_FIXED 4
 
 namespace Flac {
+    
+    constexpr int FLAC_MAX_LPC = 32;
+    constexpr int FLAC_MIN_LPC = 1;
+    constexpr int FLAC_MAX_K = 30;
+    constexpr int FLAC_MAX_FIXED = 4;
     
     using flag_t = std::uint8_t;
     const flag_t riceMethodMask = 0x01;
@@ -30,6 +38,7 @@ namespace Flac {
     const flag_t lpcMethodLevel2 = 0x08;
     const flag_t lpcMethodLevel4 = 0x0A;
     const flag_t lpcMethodLevel8 = 0x0C;
+    const flag_t lpcMethodNone = 0x0E;
     
     using lpc_t = std::int16_t;
     using sample_t = std::int32_t;
@@ -40,6 +49,7 @@ namespace Flac {
         public:
             size_t blockSize;
             size_t bitsPerSample;
+            size_t bitsPerCoefficient;
             int minPred;
             int maxPred;
             int minPart;
@@ -59,31 +69,52 @@ namespace Flac {
             SubframeType type;
             int predOrder;
             int partOrder;
+            int lpcShift;
+            size_t bitSize;
             std::vector<int> kParams;
             std::vector<lpc_t> coefficients;
+            
+            FlacSubframeParams(){}
+            
+            /*
+            Find the partition order, k params, and bit length for an ideal encoding using
+            the provided options if LPC or FIXED (idealRiceEncoding),
+            Otherwise, only make sure the type is set properly.
+            */
+            FlacSubframeParams(
+                const std::vector<zip_t>& residue,
+                const FlacEncodeOptions& options,
+                const std::vector<lpc_t>& fCoef,
+                int lpcShift = 0);
+            
+            FlacSubframeParams(
+                const std::vector<zip_t>& residue,
+                const FlacEncodeOptions& options,
+                int predOrder);
     };
     
     class FlacSubframe {
-        private:
+        public:
             FlacSubframeParams params;
+            sample_t sample; // For constant frames
             std::vector<sample_t> rawData; // TODO should be reference?
             std::vector<zip_t> zippedResidue;
         public:
             /*
             Construct from unencoded data with provided encoding options
             
-            First, check if it should be encoded as a constant subblock
-            If not, and if using dynamic LPC, calculate LPC coefficients
-            Calculate and store the verbatim bit length
-            If using fixed LPC, calculate and zip the residue for each order,
-            and find and store each order's bit length and parameters
+            First, check if it should be encoded as a constant subblock.
+            If not, and if using dynamic LPC, calculate LPC coefficients (calcLPC).
+            Calculate and store the verbatim bit length (options.bitsPerSample * data.size()).
+            If using fixed LPC, calculate and zip the residue for each order (calcResidueFixed),
+            and find and store each order's bit length and parameters (idealRiceEncoding).
             If using dynamic LPC and estimating LPC order, use the highest order LPC that uses
-            all of its coefficients
-            Otherwise, using the lpcMethod, try each candidate LPC order storing their bit lengths
-            and parameters
+            all of its coefficients,
+            otherwise, using the lpcMethod, try each candidate LPC order storing their bit lengths
+            and parameters (idealRiceEncoding).
             Store the parameters for whichever attempted method yields the least bit length
             */
-            FlacSubframe(std::vector<sample_t>& data, FlacEncodeOptions& options);
+            FlacSubframe(std::vector<sample_t>& data, const FlacEncodeOptions& options);
     };
     
     /*
@@ -91,10 +122,10 @@ namespace Flac {
     X[k][i] is the number of bits it would take to encode the i-th partition of residue with rice
     paramter k,
     unless maxK == 0, in which case
-    X[0][i] is the sum of all residues in the i-th parameter
+    X[0][i] is the sum of all residues in the i-th partition
     */
     std::vector<std::vector<zip_t>> sumsForEachPartition(
-        std::vector<zip_t>& residue,
+        const std::vector<zip_t>& residue,
         int maxK, int pred, int part);
     
     /*
@@ -135,35 +166,120 @@ namespace Flac {
     With useEstimation, count(n) = sizeBitsOfSum
     Otherwise, count(n) = n
     
-    Return <k, bit length>
+    Return <bit length, k>
     */
-    std::pair<int, size_t> idealK(
-        std::vector<std::vector<zip_t>>& sums,
+    std::pair<size_t, int> idealK(
+        const std::vector<std::vector<zip_t>>& sums, size_t n,
         int partition, bool useEstimation);
     
     /*
-    Returns <partition order, k paramter for each partition, length in bits>
+    Returns <length in bits, partition order, k paramter for each partition>
     
-    First, calculate the sums for each partition using the max order.
+    First, calculate the sums for each partition using the max order (sumsForEachPartition).
     Then, for each candidate partition order, in descending order, iterate over those sums to find
     the ideal k parameter for that partition, and estimate the number of bits needed to encode it.
+    Decrease the partition order on the sums by (decreasePartitionOfSums).
     Return whichever partition order minimizes the resultant bits, as well as its k-vector, as
-    <partition order, list of k params, bit length>
+    <bit length, partition order, list of k params>
     */
-    std::tuple<int, std::vector<int>, size_t> idealRiceEncoding(
-        std::vector<zip_t>& data,
+    std::tuple<size_t, int, std::vector<int>> idealRiceEncoding(
+        const std::vector<zip_t>& data,
         int pred, int minPart, int maxPart,
         bool useEstimation);
 
     /*
     Calculate and return the autocorrelations of lags [0, maxLag]
     */
-    std::vector<float> autocorrelation(std::vector<sample_t>& data, size_t maxLag);
+    std::vector<float> autocorrelation(const std::vector<float>& data, size_t maxLag);
 
     /*
     Calculate the LPC coefficients of n samples, stored in data, using Levinson-Durbin recursion
+    
+    Note that in the returned vector X, X[i] holds the (i + 1)th order coefficients, as order 0
+    has no coefficients
     */
-    std::vector<std::vector<float>> calcLPC(std::vector<sample_t>& data);
+    std::vector<std::vector<float>> calcLpcCoeffs(
+        const std::vector<sample_t>& data, int maxOrder, size_t bitsPerSample);
+    
+    /*
+    Quantize LPC coefficients with a given bit precision, returning the pair of
+    <quantized integer coefficients, bit shift to normalize them>
+    */
+    std::pair<std::vector<lpc_t>, int> quantizeLpcCoeffs(
+        const std::vector<float>& floats, size_t bitsPerCoefficient);
+    
+    /*
+    Calculate the 1st through maxOrder-th order residues of data using fixed LPC coefficients
+    
+    In the returned vector X, X[i] holds the (i + 1)th order residue, as 0th order is just data
+    */
+    std::vector<std::vector<zip_t>> calcResidueFixed(
+        const std::vector<sample_t>& data, int maxOrder);
+    
+    /*
+    Calculate the LPC residue of data using provided coefficients
+    Order can be inferred from coeffs.size()
+    */
+    std::vector<zip_t> calcResidueLpc(
+        const std::vector<sample_t>& data,
+        const std::vector<lpc_t>& coeffs, int shift);
+    
+#define FLAC_LPC_THRESH 0.10
+
+    /*
+    Find the greatest order LPC coefficients whose final coefficient has an absolute value of
+    at least FLAC_LPC_THRESH
+    
+    Returns the order in [minOrder, maxOrder], not the index in [minOrder - 1, maxOrder)
+    */
+    inline int approxIdealLpcOrder(
+        const std::vector<std::vector<float>>& coeffs,
+        int minOrder, 
+        int maxOrder)
+    {
+        for (size_t i = maxOrder; i >= minOrder; i--) {
+            const std::vector<float>& orderCoeffs = coeffs[i - 1];
+            if (std::abs(orderCoeffs[i - 1]) >= FLAC_LPC_THRESH) {
+                return i;
+            }
+        }
+        return minOrder;
+    }
+    
+    /*
+    Tries the specified number of levels linearly distributed over [minOrder, maxOrder] to find
+    which yields the least bit size
+    
+    Start with level = minOrder, step = (maxOrder + 1 - minOrder) / levels,
+    and repeat incrementing level by step
+    */
+    FlacSubframeParams linearIdealLpcOrder(
+        const std::vector<std::vector<float>>& coeffs,
+        const std::vector<sample_t>& data,
+        const FlacEncodeOptions& options,
+        int levels);
+    
+    /*
+    Brute-force searches every prediction order in [minOrder, maxOrder] to find
+    which yields the least bit size
+    */
+    FlacSubframeParams naiveIdealLpcOrder(
+        const std::vector<std::vector<float>>& coeffs,
+        const std::vector<sample_t>& data,
+        const FlacEncodeOptions& options);
+    
+    /*
+    Tries a binary search over [minOrder, maxOrder] to find
+    which yields the least bit size
+    
+    Starts at level = floor((minOrder + maxOrder) / 2), step = ceil((maxOrder + 1 - minOrder) / 2)
+    Finds ideal value out of level, level - step, and level + step, clamping to the bounds
+    level is set to the preferred out of those three, and step is halved, until step is 0
+    */
+    FlacSubframeParams binaryIdealLpcOrder(
+        const std::vector<std::vector<float>>& coeffs,
+        const std::vector<sample_t>& data,
+        const FlacEncodeOptions& options);
 
 }
 
