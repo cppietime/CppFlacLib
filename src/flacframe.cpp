@@ -88,7 +88,6 @@ namespace Flac {
                     break;
                 }
             }
-            std::cout << "Chose channel mode " << channelMode << std::endl;
         }
         else {
             channelMode = modeFor(options.numChannels);
@@ -138,7 +137,6 @@ namespace Flac {
         std::stringstream sstr;
         BitBuffer::BitBufferOut bbo(sstr);
         bbo.write(0xFFF8, 16); /* Sync code */
-        std::cout << "Frame sized " << blockSize << std::endl;
         int sizeCode = -1;
         for (int i = 0; i < 16; i++) {
             if (blockSizeCodes[i] == blockSize) {

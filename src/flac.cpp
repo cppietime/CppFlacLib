@@ -13,7 +13,6 @@ namespace Flac {
     
     void Flac::processBuffer()
     {
-        std::cout << "Processing " << buffer.size() << std::endl;
         if ((options.bitsPerSample & 7) != 0) {
             std::stringstream sstr;
             BitBuffer::BitBufferOut bbo(sstr);
@@ -48,14 +47,13 @@ namespace Flac {
         bbo.write(headerLength, 24);
         bbo.write(options.blockSize, 16);
         bbo.write(options.blockSize, 16);
-        bbo.write(0, 24);
-        bbo.write(0, 24);
+        bbo.write((finalized && frames.empty()) ? minFrame : 0, 24);
+        bbo.write((finalized && frames.empty()) ? maxFrame : 0, 24);
         bbo.write(options.sampleRate, 20);
         bbo.write(options.numChannels - 1, 3);
         bbo.write(options.bitsPerSample - 1, 5);
-        std::cout << "BPS = " << options.bitsPerSample << std::endl;
-        bbo.write(numSamples >> 32, 4);
-        bbo.write(numSamples & 0xFFFFFFFF, 32);
+        bbo.write(finalized ? (numSamples >> 32) : 0, 4);
+        bbo.write(finalized ? (numSamples & 0xFFFFFFFF) : 0, 32);
         auto digest = md5.finalize();
         for (auto it = digest.begin(); it != digest.end(); it++) {
             bbo.write(*it, 8);
@@ -67,7 +65,11 @@ namespace Flac {
     {
         FlacFrame frame = flac.frames.front();
         flac.frames.pop();
+        std::streampos base = stream.tellp();
         frame.writeTo(stream);
+        int frameSize = stream.tellp() - base;
+        flac.minFrame = std::min(frameSize, flac.minFrame);
+        flac.maxFrame = std::max(frameSize, flac.maxFrame);
         return stream;
     }
     

@@ -23,7 +23,6 @@ namespace Flac {
             }
         }
         if (constant) {
-            std::cout << "Constant subframe\n";
             params.type = CONSTANT;
             sample = data[0];
             return;
@@ -32,11 +31,10 @@ namespace Flac {
         FlacSubframeParams bestParams;
         bestParams.type = VERBATIM;
         bestParams.bitSize = data.size() * options.bitsPerSample;
-        std::cout << "Verbatim takes " << bestParams.bitSize << " bits\n";
         
         int lpcMethod = options.flags & lpcMethodMask;
         
-        if (lpcMethod == lpcMethodFixed) {
+        if (lpcMethod != lpcMethodNone) {
             auto fixedResidue = calcResidueFixed(data, options.maxPred);
             for (int pred = options.minPred; pred <= options.maxPred; pred++) {
                 FlacSubframeParams fixParams(fixedResidue[pred - 1], options, pred);
@@ -70,8 +68,8 @@ namespace Flac {
                 }
                 lpcParams = linearIdealLpcOrder(lpcCoeffs, data, options, levels);
             }
-            std::cout << "LPC order " << lpcParams.predOrder << " takes " << lpcParams.bitSize << " bits\n";
-            if (lpcParams.bitSize < bestParams.bitSize || bestParams.type == VERBATIM) { // TODO undo
+            // std::cout << "LPC order " << lpcParams.predOrder << " takes " << lpcParams.bitSize << " bits\n";
+            if (lpcParams.bitSize < bestParams.bitSize) {
                 bestParams = lpcParams;
             }
         }
@@ -80,11 +78,11 @@ namespace Flac {
         
         switch (params.type) {
             case VERBATIM:
-                std::cout << "Verbatim subframe\n";
+                // std::cout << "Verbatim subframe\n";
                 rawData = data;
                 break;
             case FIXED:
-                std::cout << "Fixed LPC of order " << params.predOrder << std::endl;
+                // std::cout << "Fixed LPC of order " << params.predOrder << std::endl;
                 zippedResidue = calcResidueFixed(data, params.predOrder).back();
                 rawData = std::vector<sample_t>(&data[0], &data[params.predOrder]);
                 break;
@@ -105,14 +103,12 @@ namespace Flac {
         }
         bbo.write(bigK, 2);
         bbo.write(params.partOrder, 4);
-        std::cout << "Writing " << params.partOrder << " partitions\n";
         size_t start = 0;
         size_t partSize = (zippedResidue.size() + params.predOrder) >> params.partOrder;
         size_t end = partSize - params.predOrder;
         for (size_t p = 0; p < (1 << params.partOrder); p++) {
             int k = params.kParams[p];
             k = std::max(1, k);
-            std::cout << "Encoding " << (end - start) << " samples with k = " << k << std::endl;
             bbo.write(k, bigK + 4);
             while (start < end) {
                 auto code = riceEncode(zippedResidue[start++], k);
@@ -156,10 +152,8 @@ namespace Flac {
                 }
                 bbo.write(options.bitsPerCoefficient - 1, 4);
                 bbo.write(params.lpcShift, 5);
-                std::cout << "Shift = " << params.lpcShift << std::endl;
                 for (auto it = params.coefficients.begin(); it != params.coefficients.end(); it++) {
                     bbo.write(*it, options.bitsPerCoefficient);
-                    // std::cout << "Normalized: " << *it << std::endl;
                 }
                 writeResidue(bbo);
                 break;

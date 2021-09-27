@@ -10,6 +10,7 @@ FLAC encoder
 #include <cstdlib>
 #include <cstdint>
 #include <cmath>
+#include <climits>
 #include <sstream>
 #include <utility>
 #include <tuple>
@@ -31,6 +32,13 @@ namespace Flac {
     constexpr unsigned int FLAC_MAX_K = 30;
     constexpr unsigned int FLAC_MAX_FIXED = 4;
     constexpr unsigned int FLAC_MAX_PARTORDER = 15;
+    constexpr unsigned int FLAC_MAX_SINGLE_HZ = 65537;
+    constexpr unsigned int FLAC_DEFAULT_BLOCKSIZE = 8192;
+    constexpr unsigned int FLAC_DEFAULT_LPCBITS = 12;
+    constexpr unsigned int FLAC_DEFAULT_MINPRED = 1;
+    constexpr unsigned int FLAC_DEFAULT_MAXPRED = 32;
+    constexpr unsigned int FLAC_DEFAULT_MINPART = 0;
+    constexpr unsigned int FLAC_DEFAULT_MAXPART = 14;
     
     using flag_t = std::uint8_t;
     const flag_t riceMethodMask = 0x01;
@@ -50,6 +58,7 @@ namespace Flac {
     using sample_t = std::int32_t;
     using zip_t = std::uint32_t;
     using residue_t = std::uint16_t;
+    using usum_t = std::uint32_t;
     
     struct FlacEncodeOptions {
         public:
@@ -69,12 +78,12 @@ namespace Flac {
                 size_t numChannels,
                 size_t bitsPerSample,
                 size_t sampleRate,
-                size_t blockSize = 8192,
-                size_t bitsPerCoefficient = 12,
-                unsigned int minPred = 1,
-                unsigned int maxPred = 4,
-                unsigned int minPart = 0,
-                unsigned int maxPart = 14,
+                size_t blockSize = FLAC_DEFAULT_BLOCKSIZE,
+                size_t bitsPerCoefficient = FLAC_DEFAULT_LPCBITS,
+                unsigned int minPred = FLAC_DEFAULT_MINPRED,
+                unsigned int maxPred = FLAC_DEFAULT_MAXPRED,
+                unsigned int minPart = FLAC_DEFAULT_MINPART,
+                unsigned int maxPart = FLAC_DEFAULT_MAXPART,
                 unsigned int maxK = FLAC_MAX_K,
                 flag_t flags = lpcMethodFixed | riceMethodEstimate
             ) :
@@ -91,11 +100,16 @@ namespace Flac {
                 flags {flags}
             {
                     if ((flags & lpcMethodMask) == lpcMethodFixed) {
-                        maxPred = std::min(maxPred, 4U);
+                        maxPred = std::min(maxPred, FLAC_MAX_FIXED);
                     }
                     maxPart = std::min(maxPart, FLAC_MAX_PARTORDER);
                     minPart = std::min(maxPart, minPart);
-                    if (sampleRate >= 65538) {
+                    maxK = std::min(maxK, FLAC_MAX_K);
+                    minPred = std::min(minPred, FLAC_MAX_LPC);
+                    maxPred = std::min(maxPred, FLAC_MAX_LPC);
+                    minPart = std::min(minPart, FLAC_MAX_PARTORDER);
+                    maxPart = std::min(maxPart, FLAC_MAX_PARTORDER);
+                    if (sampleRate > FLAC_MAX_SINGLE_HZ) {
                         sampleRate = 10 * (sampleRate / 10);
                     }
             }
@@ -208,6 +222,9 @@ namespace Flac {
             std::queue<FlacFrame> frames;
             size_t numFrames;
             size_t numSamples;
+            int minFrame;
+            int maxFrame;
+            bool finalized;
             
             /*
             Create a temporary LE buffer of buffer's samples for MD5 and process it
@@ -218,7 +235,10 @@ namespace Flac {
                 options {options},
                 blockSize {options.blockSize},
                 numFrames {0},
-                numSamples {0}
+                numSamples {0},
+                minFrame {INT_MAX},
+                maxFrame {0},
+                finalized {false}
             {
                     buffer.reserve(blockSize * options.numChannels);
             }
@@ -226,6 +246,7 @@ namespace Flac {
             template <class T>
             inline Flac& operator<<(std::vector<T> data)
             {
+                finalized = false;
                 for (auto it = data.begin(); it != data.end(); it++) {
                     buffer.push_back((sample_t)*it);
                     if (buffer.size() == blockSize * options.numChannels) {
@@ -241,6 +262,7 @@ namespace Flac {
                 if (!buffer.empty()) {
                     processBuffer();
                 }
+                finalized = true;
             }
             
             inline size_t storedFrames()
@@ -269,14 +291,14 @@ namespace Flac {
     unless maxK == 0, in which case
     X[0][i] is the sum of all residues in the i-th partition
     */
-    std::vector<std::vector<zip_t>> sumsForEachPartition(
+    std::vector<std::vector<usum_t>> sumsForEachPartition(
         const std::vector<zip_t>& residue,
         int maxK, int pred, int part);
     
     /*
     Change sums to be for one lower partition order
     */
-    void decreasePartitionOfSums(std::vector<std::vector<zip_t>>& sums, int maxK);
+    void decreasePartitionOfSums(std::vector<std::vector<usum_t>>& sums, int maxK);
     
     /*
     Zip signed samples to unsigned values
@@ -301,7 +323,7 @@ namespace Flac {
     /*
     Estimate how many bits it takes to rice-encode values by their sum
     */
-    inline size_t sizeBitsOfSum(zip_t sum, size_t n, int k)
+    inline size_t sizeBitsOfSum(usum_t sum, size_t n, int k)
     {
         return (k + 1) * n + ((sum - (n >> 1)) >> k);
     }
@@ -309,10 +331,11 @@ namespace Flac {
     /*
     Estimate and return the ideal K param
     */
-    inline int estimateK(zip_t sum, size_t n)
+    inline int estimateK(usum_t sum, size_t n)
     {
         float mean = (float)sum / n + 0.5;
-        int k = BitManip::msbSet(std::ceil(mean)) - 1;
+        int k = BitManip::msbSet((int)std::ceil(mean)) - 1;
+        // std::cout << mean << "->" << k << std::endl;
         return std::max(k, 0);
     }
     
@@ -324,7 +347,7 @@ namespace Flac {
     Return <bit length, k>
     */
     std::pair<size_t, int> idealK(
-        const std::vector<std::vector<zip_t>>& sums, size_t n,
+        const std::vector<std::vector<usum_t>>& sums, size_t n,
         int partition, bool useEstimation);
     
     /*

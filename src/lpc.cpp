@@ -45,12 +45,12 @@ namespace Flac {
         }
         
         std::vector<float> autocorr = autocorrelation(windowed, maxOrder, bitsPerSample);
-        norm = autocorr[0];
-        for (auto it = autocorr.begin(); it != autocorr.end(); it++) {
-            // *it /= norm;
-            std::cout << *it << ", ";
-        }
-        std::cout << std::endl;
+        // // norm = autocorr[0];
+        // for (auto it = autocorr.begin(); it != autocorr.end(); it++) {
+            // // *it /= norm;
+            // std::cout << *it << ", ";
+        // }
+        // std::cout << std::endl;
         
         std::vector<std::vector<float>> coeffs;
         coeffs.reserve(maxOrder);
@@ -114,10 +114,10 @@ namespace Flac {
             // }
             // std::cout << (sanity) << " sanity\n";
             
-            for (auto it = x.begin(); it != x.end(); it++) {
-                std::cout << *it << ", ";
-            }
-            std::cout << std::endl;
+            // for (auto it = x.begin(); it != x.end(); it++) {
+                // std::cout << *it << ", ";
+            // }
+            // std::cout << std::endl;
         }
         return coeffs;
     }
