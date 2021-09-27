@@ -41,6 +41,7 @@ namespace Flac {
     void Flac::writeHeaderTo(std::ostream& stream)
     {
         stream.write("fLaC", 4);
+        streaminfoPos = stream.tellp();
         stream.put(0x80); /* STREAMINFO */
         BitBuffer::BitBufferOut bbo(stream);
         constexpr size_t headerLength = 2 + 2 + 3 + 3 + 8 + 16;
@@ -59,6 +60,29 @@ namespace Flac {
             bbo.write(*it, 8);
         }
         bbo.flush();
+    }
+    
+    void Flac::rewriteParams(std::ostream& stream) const
+    {
+        if (streaminfoPos == -1) {
+            return;
+        }
+        std::streampos store = stream.tellp();
+        std::streampos target = streaminfoPos;
+        target += 8;
+        stream.seekp(target);
+        
+        BitBuffer::BitBufferOut bbo(stream);
+        bbo.write((finalized && frames.empty()) ? minFrame : 0, 24);
+        bbo.write((finalized && frames.empty()) ? maxFrame : 0, 24);
+        bbo.write(options.sampleRate, 20);
+        bbo.write(options.numChannels - 1, 3);
+        bbo.write(options.bitsPerSample - 1, 5);
+        bbo.write(finalized ? (numSamples >> 32) : 0, 4);
+        bbo.write(finalized ? (numSamples & 0xFFFFFFFF) : 0, 32);
+        bbo.flush();
+        
+        stream.seekp(store);
     }
     
     std::ostream& operator<<(std::ostream& stream, Flac &flac)

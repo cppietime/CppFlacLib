@@ -39,6 +39,7 @@ namespace Flac {
     constexpr unsigned int FLAC_DEFAULT_MAXPRED = 32;
     constexpr unsigned int FLAC_DEFAULT_MINPART = 0;
     constexpr unsigned int FLAC_DEFAULT_MAXPART = 14;
+    constexpr size_t FLAC_MIN_BPS = 8;
     
     using flag_t = std::uint8_t;
     const flag_t riceMethodMask = 0x01;
@@ -88,7 +89,7 @@ namespace Flac {
                 flag_t flags = lpcMethodFixed | riceMethodEstimate
             ) :
                 numChannels {numChannels},
-                bitsPerSample {bitsPerSample},
+                bitsPerSample {std::max(FLAC_MIN_BPS, bitsPerSample)},
                 sampleRate {sampleRate},
                 blockSize {blockSize},
                 bitsPerCoefficient {bitsPerCoefficient},
@@ -160,7 +161,7 @@ namespace Flac {
             std::vector<sample_t> rawData; // For verbatim frames
             std::vector<zip_t> zippedResidue;
             
-            void writeResidue(BitBuffer::BitBufferOut& bbo);
+            void writeResidue(BitBuffer::BitBufferOut& bbo) const;
         public:
             /*
             Construct from unencoded data with provided encoding options
@@ -183,7 +184,10 @@ namespace Flac {
                 return params;
             }
             
-            void writeTo(BitBuffer::BitBufferOut& bbo);
+            /*
+            Write this subframe, not necessarily byte-aligned, to a BitBufferOut
+            */
+            void writeTo(BitBuffer::BitBufferOut& bbo) const;
     };
     
     enum ChannelMode {
@@ -192,6 +196,9 @@ namespace Flac {
         MID_SIDE = 10
     };
     
+    /*
+    Convert a number of channels to a channel assignment index
+    */
     inline int modeFor(int numChannels)
     {
         return numChannels - 1;
@@ -210,7 +217,10 @@ namespace Flac {
                 const FlacEncodeOptions& options,
                 std::uint32_t frameNo);
             
-            void writeTo(std::ostream& stream);
+            /*
+            Encode this frame and write out to stream
+            */
+            void writeTo(std::ostream& stream) const;
     };
     
     class Flac {
@@ -225,6 +235,7 @@ namespace Flac {
             int minFrame;
             int maxFrame;
             bool finalized;
+            std::streampos streaminfoPos;
             
             /*
             Create a temporary LE buffer of buffer's samples for MD5 and process it
@@ -238,11 +249,15 @@ namespace Flac {
                 numSamples {0},
                 minFrame {INT_MAX},
                 maxFrame {0},
-                finalized {false}
+                finalized {false},
+                streaminfoPos{-1}
             {
                     buffer.reserve(blockSize * options.numChannels);
             }
         
+            /*
+            Load data into the buffer, processing into frames when the buffer fills up
+            */
             template <class T>
             inline Flac& operator<<(std::vector<T> data)
             {
@@ -257,6 +272,9 @@ namespace Flac {
                 return *this;
             }
             
+            /*
+            If the buffer is still holding anything, process it into a final frame
+            */
             inline void finalize()
             {
                 if (!buffer.empty()) {
@@ -265,18 +283,38 @@ namespace Flac {
                 finalized = true;
             }
             
-            inline size_t storedFrames()
+            /*
+            The number of frames stored
+            */
+            inline size_t storedFrames() const
             {
                 return frames.size();
             }
             
-            inline bool empty()
+            /*
+            Returns true iff frames is empty
+            */
+            inline bool empty() const
             {
                 return frames.empty();
             }
             
+            /*
+            Write the fLaC FourCC and STREAMINFO metadata block to a stream
+            */
             void writeHeaderTo(std::ostream& stream);
             
+            /*
+            If a position from unknown params in a STREAMINFO metadata block is stored,
+            rewrite those params to the stream.
+            This method assumes the stream passed to it is the same as the stream passed to
+            writeHeaderTo
+            */
+            void rewriteParams(std::ostream& stream) const;
+            
+            /*
+            Pop one frame from the queue and encode it into the provided stream
+            */
             friend std::ostream& operator<<(std::ostream& stream, Flac &flac);
             
     };

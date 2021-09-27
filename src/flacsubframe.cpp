@@ -33,10 +33,11 @@ namespace Flac {
         bestParams.bitSize = data.size() * options.bitsPerSample;
         
         int lpcMethod = options.flags & lpcMethodMask;
+        int lpcOrder = std::min(options.maxPred, FLAC_MAX_FIXED);
         
         if (lpcMethod != lpcMethodNone) {
-            auto fixedResidue = calcResidueFixed(data, options.maxPred);
-            for (int pred = options.minPred; pred <= options.maxPred; pred++) {
+            auto fixedResidue = calcResidueFixed(data, lpcOrder);
+            for (int pred = options.minPred; pred <= lpcOrder; pred++) {
                 FlacSubframeParams fixParams(fixedResidue[pred - 1], options, pred);
                 // std::cout << "Fix param " << pred << " takes " << fixParams.bitSize << " bits\n";
                 if (fixParams.bitSize < bestParams.bitSize) {
@@ -93,7 +94,7 @@ namespace Flac {
         }
     }
     
-    void FlacSubframe::writeResidue(BitBuffer::BitBufferOut& bbo)
+    void FlacSubframe::writeResidue(BitBuffer::BitBufferOut& bbo) const
     {
         int bigK = 0;
         for (auto it = params.kParams.begin(); it < params.kParams.end(); it++) {
@@ -114,7 +115,7 @@ namespace Flac {
                 auto code = riceEncode(zippedResidue[start++], k);
                 while (code.first > 32) {
                     bbo.write(0, 32);
-                    code.first--;
+                    code.first -= 32;
                 }
                 bbo.write(0, code.first);
                 bbo.write(1, 1);
@@ -124,7 +125,7 @@ namespace Flac {
         }
     }
     
-    void FlacSubframe::writeTo(BitBuffer::BitBufferOut& bbo)
+    void FlacSubframe::writeTo(BitBuffer::BitBufferOut& bbo) const
     {
         switch (params.type) {
             case CONSTANT:

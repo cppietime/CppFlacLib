@@ -132,7 +132,7 @@ namespace Flac {
         -1
     };
     
-    void FlacFrame::writeTo(std::ostream& stream)
+    void FlacFrame::writeTo(std::ostream& stream) const
     {
         std::stringstream sstr;
         BitBuffer::BitBufferOut bbo(sstr);
