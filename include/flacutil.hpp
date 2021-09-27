@@ -9,10 +9,15 @@ FLAC encoder
 
 #include <cstdlib>
 #include <cstdint>
+#include <cmath>
 #include <sstream>
 #include <utility>
 #include <tuple>
 #include <vector>
+#include <queue>
+#include <iostream>
+
+#include "bitutil.hpp"
 
 // #define FLAC_MAX_LPC 32
 // #define FLAC_MIN_LPC 1 // Not sure if I'll need this
@@ -21,10 +26,11 @@ FLAC encoder
 
 namespace Flac {
     
-    constexpr int FLAC_MAX_LPC = 32;
-    constexpr int FLAC_MIN_LPC = 1;
-    constexpr int FLAC_MAX_K = 30;
-    constexpr int FLAC_MAX_FIXED = 4;
+    constexpr unsigned int FLAC_MAX_LPC = 32;
+    constexpr unsigned int FLAC_MIN_LPC = 1;
+    constexpr unsigned int FLAC_MAX_K = 30;
+    constexpr unsigned int FLAC_MAX_FIXED = 4;
+    constexpr unsigned int FLAC_MAX_PARTORDER = 15;
     
     using flag_t = std::uint8_t;
     const flag_t riceMethodMask = 0x01;
@@ -49,12 +55,50 @@ namespace Flac {
         public:
             size_t blockSize;
             size_t bitsPerSample;
+            size_t sampleRate;
             size_t bitsPerCoefficient;
-            int minPred;
-            int maxPred;
-            int minPart;
-            int maxPart;
+            size_t numChannels;
+            unsigned int minPred;
+            unsigned int maxPred;
+            unsigned int minPart;
+            unsigned int maxPart;
+            unsigned int maxK;
             flag_t flags;
+            
+            FlacEncodeOptions(
+                size_t numChannels,
+                size_t bitsPerSample,
+                size_t sampleRate,
+                size_t blockSize = 8192,
+                size_t bitsPerCoefficient = 12,
+                unsigned int minPred = 1,
+                unsigned int maxPred = 4,
+                unsigned int minPart = 0,
+                unsigned int maxPart = 14,
+                unsigned int maxK = FLAC_MAX_K,
+                flag_t flags = lpcMethodFixed | riceMethodEstimate
+            ) :
+                numChannels {numChannels},
+                bitsPerSample {bitsPerSample},
+                sampleRate {sampleRate},
+                blockSize {blockSize},
+                bitsPerCoefficient {bitsPerCoefficient},
+                minPred {minPred},
+                maxPred {maxPred},
+                minPart {minPart},
+                maxPart {maxPart},
+                maxK {maxK},
+                flags {flags}
+            {
+                    if ((flags & lpcMethodMask) == lpcMethodFixed) {
+                        maxPred = std::min(maxPred, 4U);
+                    }
+                    maxPart = std::min(maxPart, FLAC_MAX_PARTORDER);
+                    minPart = std::min(maxPart, minPart);
+                    if (sampleRate >= 65538) {
+                        sampleRate = 10 * (sampleRate / 10);
+                    }
+            }
     };
     
     enum SubframeType {
@@ -71,6 +115,7 @@ namespace Flac {
             int partOrder;
             int lpcShift;
             size_t bitSize;
+            size_t bitsPerSample;
             std::vector<int> kParams;
             std::vector<lpc_t> coefficients;
             
@@ -94,11 +139,14 @@ namespace Flac {
     };
     
     class FlacSubframe {
-        public:
+        private:
+            const FlacEncodeOptions options;
             FlacSubframeParams params;
             sample_t sample; // For constant frames
-            std::vector<sample_t> rawData; // TODO should be reference?
+            std::vector<sample_t> rawData; // For verbatim frames
             std::vector<zip_t> zippedResidue;
+            
+            void writeResidue(BitBuffer::BitBufferOut& bbo);
         public:
             /*
             Construct from unencoded data with provided encoding options
@@ -115,7 +163,104 @@ namespace Flac {
             Store the parameters for whichever attempted method yields the least bit length
             */
             FlacSubframe(std::vector<sample_t>& data, const FlacEncodeOptions& options);
+            
+            inline const FlacSubframeParams& getParams()
+            {
+                return params;
+            }
+            
+            void writeTo(BitBuffer::BitBufferOut& bbo);
     };
+    
+    enum ChannelMode {
+        LEFT_SIDE = 8,
+        RIGHT_SIDE = 9,
+        MID_SIDE = 10
+    };
+    
+    inline int modeFor(int numChannels)
+    {
+        return numChannels - 1;
+    }
+    
+    class FlacFrame {
+        private:
+            const FlacEncodeOptions options;
+            size_t blockSize;
+            std::vector<FlacSubframe> subframes;
+            int channelMode;
+            std::uint32_t frameNo;
+        public:
+            FlacFrame(
+                const std::vector<sample_t>& data,
+                const FlacEncodeOptions& options,
+                std::uint32_t frameNo);
+            
+            void writeTo(std::ostream& stream);
+    };
+    
+    class Flac {
+        private:
+            const FlacEncodeOptions& options;
+            std::vector<sample_t> buffer;
+            size_t blockSize;
+            Digest::MD5Context md5;
+            std::queue<FlacFrame> frames;
+            size_t numFrames;
+            size_t numSamples;
+            
+            /*
+            Create a temporary LE buffer of buffer's samples for MD5 and process it
+            */
+            void processBuffer();
+        public:
+            Flac(const FlacEncodeOptions& options) :
+                options {options},
+                blockSize {options.blockSize},
+                numFrames {0},
+                numSamples {0}
+            {
+                    buffer.reserve(blockSize * options.numChannels);
+            }
+        
+            template <class T>
+            inline Flac& operator<<(std::vector<T> data)
+            {
+                for (auto it = data.begin(); it != data.end(); it++) {
+                    buffer.push_back((sample_t)*it);
+                    if (buffer.size() == blockSize * options.numChannels) {
+                        processBuffer();
+                    }
+                }
+                numSamples += data.size() / options.numChannels;
+                return *this;
+            }
+            
+            inline void finalize()
+            {
+                if (!buffer.empty()) {
+                    processBuffer();
+                }
+            }
+            
+            inline size_t storedFrames()
+            {
+                return frames.size();
+            }
+            
+            inline bool empty()
+            {
+                return frames.empty();
+            }
+            
+            void writeHeaderTo(std::ostream& stream);
+            
+            friend std::ostream& operator<<(std::ostream& stream, Flac &flac);
+            
+    };
+    
+    /* Does NOT write the entire FLAC file. Only pops and writes one frame at a time */
+    std::ostream& operator<<(std::ostream& stream, Flac &flac);
     
     /*
     For a given prediction order pred and partition order part, return a nested vector X such that
@@ -158,7 +303,17 @@ namespace Flac {
     */
     inline size_t sizeBitsOfSum(zip_t sum, size_t n, int k)
     {
-        return (k + 1) * n + (sum >> k);
+        return (k + 1) * n + ((sum - (n >> 1)) >> k);
+    }
+    
+    /*
+    Estimate and return the ideal K param
+    */
+    inline int estimateK(zip_t sum, size_t n)
+    {
+        float mean = (float)sum / n + 0.5;
+        int k = BitManip::msbSet(std::ceil(mean)) - 1;
+        return std::max(k, 0);
     }
     
     /*
@@ -185,12 +340,13 @@ namespace Flac {
     std::tuple<size_t, int, std::vector<int>> idealRiceEncoding(
         const std::vector<zip_t>& data,
         int pred, int minPart, int maxPart,
-        bool useEstimation);
+        bool useEstimation, int maxK);
 
     /*
     Calculate and return the autocorrelations of lags [0, maxLag]
     */
-    std::vector<float> autocorrelation(const std::vector<float>& data, size_t maxLag);
+    std::vector<float> autocorrelation(
+        const std::vector<float>& data, size_t maxLag, size_t bitsPerSample);
 
     /*
     Calculate the LPC coefficients of n samples, stored in data, using Levinson-Durbin recursion

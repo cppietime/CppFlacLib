@@ -4,8 +4,15 @@ flacencode.cpp
 
 #include <cstdlib>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <sstream>
+#include <string>
+#include <endian.h>
 #include "flacutil.hpp"
+
+#include "bitutil.hpp"
 
 namespace Flac {
     
@@ -14,11 +21,18 @@ namespace Flac {
         int maxK, int pred, int part)
     {
         std::vector<std::vector<zip_t>> sums;
+        sums.reserve(maxK + 1);
+        
         size_t nParts = 1 << part;
         size_t n = residue.size() + pred;
         size_t partSize = n >> part;
+        
+        std::vector<zip_t> fork;
+        fork.reserve(nParts);
+        
         for (int k = 0; k <= maxK; k++) {
-            std::vector<zip_t> fork;
+            // std::vector<zip_t> fork;
+            fork.clear();
             size_t start = 0;
             size_t end = partSize - pred;
             for (size_t p = 0; p < nParts; p++) {
@@ -61,6 +75,11 @@ namespace Flac {
         const std::vector<std::vector<zip_t>>& sums, size_t n,
         int partition, bool useEstimation)
     {
+        if (useEstimation) {
+            int k = estimateK(sums[0][partition], n);
+            size_t bitSize = sizeBitsOfSum(sums[0][partition], n, k);
+            return std::pair<size_t, int>(bitSize, k);
+        }
         size_t bestBits;
         int bestK;
         for (int k = 0; k < sums.size(); k++) {
@@ -77,17 +96,26 @@ namespace Flac {
     std::tuple<size_t, int, std::vector<int>> idealRiceEncoding(
         const std::vector<zip_t>& data,
         int pred, int minPart, int maxPart,
-        bool useEstimation)
+        bool useEstimation, int maxK)
     {
+        /* Find highest candidate partition order given data.size() and pred */
+        int pmax = BitManip::lsbSet(data.size() + pred);
+        while ((data.size() + pred) >> pmax <= pred && pmax > 0) {
+            pmax--;
+        }
+        minPart = std::min(minPart, pmax);
+        maxPart = std::min(maxPart, pmax);
+        
         size_t bestBits;
         int bestPartition;
         std::vector<int> bestK;
         
-        auto sums = sumsForEachPartition(data, useEstimation ? 0 : FLAC_MAX_K, pred, maxPart);
+        auto sums = sumsForEachPartition(data, useEstimation ? 0 : maxK, pred, maxPart);
         for (int part = maxPart; part >= minPart; part--) {
             size_t bits = 0;
             size_t nParts = 1 << part;
             std::vector<int> k;
+            k.reserve(nParts);
             for (size_t i = 0; i < nParts; i++) {
                 auto bitsK = idealK(sums, data.size() - pred, i, useEstimation);
                 bits += bitsK.first;
@@ -98,7 +126,7 @@ namespace Flac {
                 bestPartition = part;
                 bestK = k;
             }
-            decreaseParititionOfSums(sums, useEstimation ? 0 : FLAC_MAX_K);
+            decreaseParititionOfSums(sums, useEstimation ? 0 : maxK);
         }
         return std::tie(bestBits, bestPartition, bestK);
     }
@@ -113,10 +141,12 @@ namespace Flac {
             type = LPC;
             coefficients = fCoef;
             predOrder = coefficients.size();
+            // std::cout << "Predorder = " << predOrder << std::endl;
             auto params = idealRiceEncoding(
                 residue, predOrder,
                 options.minPart, options.maxPart,
-                (options.flags & riceMethodMask) == riceMethodEstimate);
+                (options.flags & riceMethodMask) == riceMethodEstimate,
+                options.maxK);
             partOrder = std::get<1>(params);
             bitSize =
                 ((options.bitsPerSample + options.bitsPerCoefficient) * predOrder + 4 + 5)
@@ -135,95 +165,14 @@ namespace Flac {
         auto params = idealRiceEncoding(
             residue, predOrder,
             options.minPart, options.maxPart,
-            (options.flags & riceMethodMask) == riceMethodEstimate);
+            (options.flags & riceMethodMask) == riceMethodEstimate,
+            options.maxK);
         partOrder = std::get<1>(params);
         bitSize =
             options.bitsPerSample * predOrder
             + 2 + 4 + (5 << partOrder)
             + std::get<0>(params);
         kParams = std::get<2>(params);
-    }
-    
-    FlacSubframe::FlacSubframe(std::vector<sample_t>& data, const FlacEncodeOptions& options)
-    {
-        bool constant = true;
-        for (size_t i = 1; i < data.size(); i++) {
-            if (data[i] != data[i - 1]) {
-                constant = false;
-                break;
-            }
-        }
-        if (constant) {
-            std::cout << "Constant subframe\n";
-            params.type = CONSTANT;
-            sample = data[0];
-            return;
-        }
-        
-        FlacSubframeParams bestParams;
-        bestParams.type = VERBATIM;
-        bestParams.bitSize = data.size() * options.bitsPerSample;
-        std::cout << "Verbatim takes " << bestParams.bitSize << " bits\n";
-        
-        int lpcMethod = options.flags & lpcMethodMask;
-        
-        if (lpcMethod == lpcMethodFixed) {
-            auto fixedResidue = calcResidueFixed(data, options.maxPred);
-            for (int pred = options.minPred; pred <= options.maxPred; pred++) {
-                FlacSubframeParams fixParams(fixedResidue[pred - 1], options, pred);
-                std::cout << "Fix param " << pred << " takes " << fixParams.bitSize << " bits\n";
-                if (fixParams.bitSize < bestParams.bitSize) {
-                    bestParams = fixParams;
-                }
-            }
-        }
-        else if (lpcMethod != lpcMethodNone) {
-            auto lpcCoeffs = calcLpcCoeffs(data, options.maxPred, options.bitsPerSample);
-            FlacSubframeParams lpcParams;
-            if (lpcMethod == lpcMethodBinary) {
-                lpcParams = binaryIdealLpcOrder(lpcCoeffs, data, options);
-            }
-            else if (lpcMethod == lpcMethodBruteForce) {
-                lpcParams = naiveIdealLpcOrder(lpcCoeffs, data, options);
-            }
-            else if (lpcMethod != lpcMethodEstimate) {
-                int levels = 1;
-                switch (lpcMethod) {
-                    case lpcMethodLevel2:
-                        levels = 2;
-                        break;
-                    case lpcMethodLevel4:
-                        levels = 4;
-                        break;
-                    case lpcMethodLevel8:
-                        levels = 8;
-                        break;
-                }
-                lpcParams = linearIdealLpcOrder(lpcCoeffs, data, options, levels);
-            }
-            std::cout << "LPC order " << lpcParams.predOrder << " takes " << lpcParams.bitSize << " bits\n";
-            if (lpcParams.bitSize < bestParams.bitSize) {
-                bestParams = lpcParams;
-            }
-        }
-        
-        params = bestParams;
-        
-        switch (params.type) {
-            case VERBATIM:
-                std::cout << "Verbatim subframe\n";
-                rawData = data;
-                break;
-            case FIXED:
-                std::cout << "Fixed LPC of order " << params.predOrder << std::endl;
-                zippedResidue = calcResidueFixed(data, params.predOrder).back();
-                rawData = std::vector<sample_t>(&data[0], &data[params.predOrder]);
-                break;
-            case LPC:
-                zippedResidue = calcResidueLpc(data, params.coefficients, params.lpcShift);
-                rawData = std::vector<sample_t>(&data[0], &data[params.predOrder]);
-                break;
-        }
     }
     
 }
