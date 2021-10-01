@@ -225,7 +225,7 @@ namespace Flac {
     
     class Flac {
         private:
-            const FlacEncodeOptions& options;
+            const FlacEncodeOptions options;
             std::vector<sample_t> buffer;
             size_t blockSize;
             Digest::MD5Context md5;
@@ -259,7 +259,7 @@ namespace Flac {
             Load data into the buffer, processing into frames when the buffer fills up
             */
             template <class T>
-            inline Flac& operator<<(std::vector<T> data)
+            inline Flac& operator<<(const std::vector<T>& data)
             {
                 finalized = false;
                 for (auto it = data.begin(); it != data.end(); it++) {

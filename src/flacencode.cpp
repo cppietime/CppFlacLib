@@ -119,6 +119,10 @@ namespace Flac {
             k.reserve(nParts);
             for (size_t i = 0; i < nParts; i++) {
                 auto bitsK = idealK(sums, data.size(), i, useEstimation);
+                if (useEstimation && bitsK.second > maxK) {
+                    bitsK.second = maxK;
+                    bitsK.first = sizeBitsOfSum(sums[0][i], data.size(), maxK);
+                }
                 bits += bitsK.first;
                 k.push_back(bitsK.second);
             }

@@ -23,12 +23,12 @@ int main()
     float phase = 0;
     for (size_t i = 0; i < 44100 * 4; i++) {
         // samples.push_back(i);
-        samples.push_back(1 * (std::int16_t)(2047 * sin(phase)));
-        samples.push_back(1 * (std::int16_t)(2047 * sin(phase)));
+        samples.push_back(1 * (std::int16_t)(7 * sin(phase)));
+        samples.push_back(1 * (std::int16_t)(7 * sin(phase)));
         phase += 2 * M_PI / 44100 * (440 + 20 * sin(2 * M_PI * 1.5 * i / 44100));
     }
     Flac::FlacEncodeOptions options(2, 12, 44100);
-    options.bitsPerCoefficient = 12;
+    options.bitsPerCoefficient = 16;
     options.minPred = 1;
     options.maxPred = 32;
     options.minPart = 0;

@@ -13,27 +13,28 @@ namespace Flac {
     
     void Flac::processBuffer()
     {
-        if ((options.bitsPerSample & 7) != 0) {
-            std::stringstream sstr;
-            BitBuffer::BitBufferOut bbo(sstr);
-            for (auto it = buffer.begin(); it != buffer.end(); it++) {
-                bbo.write(*it, options.bitsPerSample);
-            }
-            bbo.flush();
-            std::string str = sstr.str();
-            md5.consume(str.data(), str.size());
-        }
-        else {
+        // if ((options.bitsPerSample & 7) != 0) {
+            // std::stringstream sstr;
+            // BitBuffer::BitBufferOut bbo(sstr);
+            // for (auto it = buffer.begin(); it != buffer.end(); it++) {
+                // bbo.write(*it, options.bitsPerSample);
+            // }
+            // bbo.flush();
+            // std::string str = sstr.str();
+            // md5.consume(str.data(), str.size());
+        // }
+        // else {
+            size_t bytes = (options.bitsPerSample + 7) >> 3;
             std::vector<std::uint8_t> dbuf;
             for (auto it = buffer.begin(); it != buffer.end(); it++) {
                 sample_t sample = *it;
-                for (size_t i = 0; i < options.bitsPerSample; i += 8) {
+                for (size_t i = 0; i < bytes; i += 1) {
                     dbuf.push_back(sample & 0xff);
                     sample >>= 8;
                 }
             }
             md5 << dbuf;
-        }
+        // }
         frames.push(FlacFrame(buffer, options, numFrames++));
         buffer.clear();
     }
