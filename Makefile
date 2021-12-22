@@ -5,6 +5,10 @@ AR := ar
 PREFIX := /usr/local
 SO_EXT := .so
 
+ifeq ($(OS), Windows_NT)
+PLATFORM := mingw
+endif
+
 ifeq ($(BITS),32)
 BIT_FLAG := -m32
 endif
@@ -34,12 +38,13 @@ OBJS = $(patsubst src/%.cpp,obj/%.o,$(SRCS))
 SHARED_LIB = build/$(SO_PRE)$(NAME)$(SO_EXT)
 STATIC_LIB = build/lib$(NAME).a
 HEADERS = $(wildcard include/*.hpp)
+FLAGS = -lbitutil
 
 .PHONY: shared
 shared: $(SHARED_LIB)
 
 $(SHARED_LIB): $(OBJS)
-	$(CC) -shared -fPIC $(BIT_FLAG) -o $@ $^
+	$(CC) -shared -fPIC $(BIT_FLAG) -o $@ $^ $(FLAGS)
 
 .PHONY: static
 static: $(STATIC_LIB)
@@ -48,7 +53,7 @@ $(STATIC_LIB): $(OBJS)
 	$(AR) -crs $@ $^
 
 obj/%.o: src/%.cpp
-	$(CC) -fPIC $(BIT_FLAG) $(INC_FLAG) -o $@ -c $^
+	$(CC) -fPIC $(BIT_FLAG) $(INC_FLAG) -o $@ -c $^ $(FLAGS)
 
 .PHONY: clean
 clean:

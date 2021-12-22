@@ -9,7 +9,6 @@ flacencode.cpp
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <endian.h>
 #include "flacutil.hpp"
 
 #include "bitutil.hpp"

@@ -4,7 +4,6 @@ flac.cpp
 
 #include <iostream>
 #include <sstream>
-#include <endian.h>
 #include "flacutil.hpp"
 
 #include "bitutil.hpp"
@@ -71,6 +70,7 @@ namespace Flac {
         std::streampos store = stream.tellp();
         std::streampos target = streaminfoPos;
         target += 8;
+        stream.flush();
         stream.seekp(target);
         
         BitBuffer::BitBufferOut bbo(stream);
@@ -83,6 +83,7 @@ namespace Flac {
         bbo.write(finalized ? (numSamples & 0xFFFFFFFF) : 0, 32);
         bbo.flush();
         
+        stream.flush();
         stream.seekp(store);
     }
     
